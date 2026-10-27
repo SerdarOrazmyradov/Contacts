@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Contact Manager</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23570df8'%3E%3Cpath d='M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0 2c-4 0-8 2-8 6v2h16v-2c0-4-4-6-8-6z'/%3E%3C/svg%3E" />
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  .contact-card { transition: transform .2s, box-shadow .2s; }
+  .contact-card:hover { transform: translateY(-2px); }
+  .avatar-circle { transition: transform .2s; }
+  .contact-card:hover .avatar-circle { transform: scale(1.05); }
+</style>
+</head>
+<body class="min-h-screen bg-base-200 transition-colors">
+
+<!-- Navbar -->
+<div class="navbar bg-base-100 shadow-sm sticky top-0 z-20">
+  <div class="flex-1 gap-2 px-4">
+    <i data-lucide="contact" class="w-6 h-6 text-primary"></i>
+    <span class="text-lg font-semibold">Contacts</span>
+    <span id="countBadge" class="badge badge-ghost badge-sm ml-1">0</span>
+  </div>
+  <div class="flex-none gap-2 px-4">
+    <label class="input input-bordered input-sm flex items-center gap-2 w-40 md:w-64">
+      <i data-lucide="search" class="w-4 h-4 opacity-60"></i>
+      <input id="searchInput" type="text" placeholder="Search..." class="grow bg-transparent outline-none text-sm" />
+    </label>
+    <label class="swap swap-rotate btn btn-ghost btn-circle">
+      <input id="themeToggle" type="checkbox" />
+      <i data-lucide="sun" class="swap-off w-5 h-5"></i>
+      <i data-lucide="moon" class="swap-on w-5 h-5"></i>
+    </label>
+  </div>
+</div>
+
+<main class="max-w-6xl mx-auto p-4 md:p-6">
+  <!-- Actions -->
+  <div class="flex flex-col sm:flex-row justify-between gap-3 mb-5">
+    <div class="flex gap-2">
+      <button class="btn btn-sm btn-outline gap-2" onclick="exportContacts()">
+        <i data-lucide="download" class="w-4 h-4"></i> Export
+      </button>
+      <button class="btn btn-sm btn-outline gap-2" onclick="fileInput.click()">
+        <i data-lucide="upload" class="w-4 h-4"></i> Import
+      </button>
+      <input id="fileInput" type="file" accept="application/json" class="hidden" />
+    </div>
+    <button class="btn btn-primary gap-2" onclick="openForm()">
+      <i data-lucide="user-plus" class="w-4 h-4"></i> Add Contact
+    </button>
+  </div>
+
+  <!-- Grid -->
+  <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  <div id="emptyState" class="hidden text-center py-16">
+    <i data-lucide="users" class="w-16 h-16 mx-auto opacity-40 mb-3"></i>
+    <p class="text-lg opacity-60">No contacts yet. Add your first one!</p>
+  </div>
+</main>
+
+<!-- Form modal -->
+<dialog id="formModal" class="modal">
+  <div class="modal-box">
+    <h3 id="formTitle" class="font-bold text-lg mb-4">Add Contact</h3>
+    <form id="contactForm" class="flex flex-col gap-3">
+      <input type="hidden" id="contactId" />
+      <input id="name" type="text" required placeholder="Full name" class="input input-bordered" />
+      <input id="phone" type="tel" placeholder="Phone" class="input input-bordered" />
+      <input id="email" type="email" placeholder="Email" class="input input-bordered" />
+      <textarea id="notes" rows="3" placeholder="Notes..." class="textarea textarea-bordered"></textarea>
+      <div class="modal-action">
+        <button type="button" class="btn" onclick="formModal.close()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<!-- Toast -->
+<div id="toast" class="toast toast-top toast-end z-50 hidden">
+  <div class="alert alert-info"><span id="toastMsg"></span></div>
+</div>
+
+<script>
+/* ---------- IndexedDB ---------- */
+const DB_NAME = 'ContactManagerDB';
+let db, contacts = [], currentSearch = '';
+
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('contacts')) d.createObjectStore('contacts', { keyPath: 'id', autoIncrement: true });
+    };
+    r.onsuccess = e => { db = e.target.result; res(); };
+    r.onerror = e => rej(e.target.error);
+  });
+}
+const tx = (mode='readonly') => db.transaction('contacts', mode).objectStore('contacts');
+const all = () => new Promise(r => { const q = tx().getAll(); q.onsuccess = () => r(q.result); });
+const put = v => new Promise(r => { const q = tx('readwrite').put(v); q.onsuccess = () => r(q.result); });
+const del = id => new Promise(r => { const q = tx('readwrite').delete(id); q.onsuccess = () => r(); });
+
+/* ---------- Helpers ---------- */
+const escapeHtml = s => String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Deterministic color from name
+const AVATAR_COLORS = ['bg-primary','bg-secondary','bg-accent','bg-success','bg-warning','bg-info','bg-error'];
+function avatarColor(name) {
+  let h = 0;
+  for (const ch of (name||'?')) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+}
+function initials(name) {
+  return (name||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join('');
+}
+function showToast(msg) {
+  document.getElementById('toastMsg').textContent = msg;
+  const t = document.getElementById('toast');
+  t.classList.remove('hidden');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.add('hidden'), 2200);
+}
+
+/* ---------- Render ---------- */
+function render() {
+  const q = currentSearch.toLowerCase();
+  const filtered = contacts
+    .filter(c => !q || [c.name, c.phone, c.email, c.notes].some(f => (f||'').toLowerCase().includes(q)))
+    .sort((a, b) => (a.name||'').localeCompare(b.name||''));
+
+  document.getElementById('countBadge').textContent = contacts.length;
+  const grid = document.getElementById('grid');
+  const empty = document.getElementById('emptyState');
+  if (!filtered.length) { grid.innerHTML = ''; empty.classList.remove('hidden'); lucide.createIcons(); return; }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = filtered.map(c => `
+    <div class="contact-card card bg-base-100 shadow-md">
+      <div class="card-body p-5">
+        <div class="flex items-start gap-3">
+          <div class="avatar-circle w-12 h-12 rounded-full ${avatarColor(c.name)} text-base-100 flex items-center justify-center font-bold flex-shrink-0">
+            ${escapeHtml(initials(c.name))}
+          </div>
+          <div class="min-w-0 flex-1">
+            <h3 class="font-semibold truncate">${escapeHtml(c.name)}</h3>
+            ${c.phone ? `<p class="text-sm opacity-80 flex items-center gap-1.5 mt-0.5"><i data-lucide="phone" class="w-3.5 h-3.5"></i>${escapeHtml(c.phone)}</p>` : ''}
+            ${c.email ? `<p class="text-sm opacity-80 flex items-center gap-1.5 mt-0.5 truncate"><i data-lucide="mail" class="w-3.5 h-3.5"></i>${escapeHtml(c.email)}</p>` : ''}
+          </div>
+        </div>
+        ${c.notes ? `<p class="text-sm opacity-70 mt-2 line-clamp-2">${escapeHtml(c.notes)}</p>` : ''}
+        <div class="card-actions justify-end mt-2">
+          <button class="btn btn-ghost btn-sm btn-circle" onclick="editContact(${c.id})" title="Edit">
+            <i data-lucide="pencil" class="w-4 h-4"></i>
+          </button>
+          <button class="btn btn-ghost btn-sm btn-circle text-error" onclick="deleteContact(${c.id})" title="Delete">
+            <i data-lucide="trash-2" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  lucide.createIcons();
+}
+
+/* ---------- Form / CRUD ---------- */
+const formModal = document.getElementById('formModal');
+function openForm(c = null) {
+  document.getElementById('formTitle').textContent = c ? 'Edit Contact' : 'Add Contact';
+  document.getElementById('contactId').value = c?.id || '';
+  document.getElementById('name').value = c?.name || '';
+  document.getElementById('phone').value = c?.phone || '';
+  document.getElementById('email').value = c?.email || '';
+  document.getElementById('notes').value = c?.notes || '';
+  formModal.showModal();
+}
+window.editContact = id => openForm(contacts.find(c => c.id === id));
+
+window.deleteContact = async id => {
+  if (!confirm('Delete this contact?')) return;
+  await del(id);
+  contacts = await all();
+  render();
+};
+
+document.getElementById('contactForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = document.getElementById('contactId').value;
+  const data = {
+    name: document.getElementById('name').value.trim(),
+    phone: document.getElementById('phone').value.trim(),
+    email: document.getElementById('email').value.trim(),
+    notes: document.getElementById('notes').value.trim(),
+  };
+  if (id) data.id = +id;
+  await put(data);
+  contacts = await all();
+  render();
+  formModal.close();
+  showToast(id ? 'Contact updated' : 'Contact added');
+});
+
+/* ---------- Search ---------- */
+document.getElementById('searchInput').addEventListener('input', e => {
+  currentSearch = e.target.value;
+  render();
+});
+
+/* ---------- Export / Import ---------- */
+window.exportContacts = () => {
+  if (!contacts.length) { showToast('No contacts to export'); return; }
+  const data = JSON.stringify(contacts, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `contacts-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${contacts.length} contact(s)`);
+};
+
+document.getElementById('fileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    let count = 0;
+    for (const item of arr) {
+      if (!item || !item.name) continue;
+      const { id, ...rest } = item; // strip id to avoid collisions
+      await put({ ...rest, name: String(rest.name).trim() });
+      count++;
+    }
+    contacts = await all();
+    render();
+    showToast(`Imported ${count} contact(s)`);
+  } catch (err) {
+    showToast('Invalid JSON file');
+  }
+  e.target.value = ''; // reset so same file can be re-imported
+});
+
+/* ---------- Theme ---------- */
+document.getElementById('themeToggle').addEventListener('change', e => {
+  document.documentElement.dataset.theme = e.target.checked ? 'dark' : 'light';
+});
+
+/* ---------- Init ---------- */
+(async () => {
+  await openDB();
+  contacts = await all();
+  render();
+})();
+</script>
+</body>
+</html>
